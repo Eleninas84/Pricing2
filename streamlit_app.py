@@ -3,6 +3,14 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 
+# Page configuration - must be first
+st.set_page_config(
+    page_title="Modulos AI GRC - Pricing Calculator",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
 # Try importing plotly, fall back if not available
 try:
     import plotly.graph_objects as go
@@ -49,14 +57,6 @@ def check_password():
 
 if not check_password():
     st.stop()
-
-# Page configuration
-st.set_page_config(
-    page_title="Modulos AI GRC - Pricing Calculator",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
 
 # Exact CSS styling from your file
 st.markdown("""
@@ -204,25 +204,48 @@ def find_appropriate_tier(num_apps: int) -> Dict:
             return tier
     return PRICING_TIERS[-1]  # Default to highest tier
 
-def calculate_price(num_apps: int, tier: Dict) -> float:
-    """Calculate price based on tier and number of apps."""
+def calculate_price(num_apps: int, tier: Dict, risk_quantification: bool = False) -> Dict:
+    """Calculate price based on tier, number of apps, and risk quantification."""
     if num_apps < tier["min_apps"]:
-        return tier["base_price"]
+        base_cost = tier["base_price"]
+        additional_cost = 0
+    else:
+        additional_apps = num_apps - tier["min_apps"]
+        base_cost = tier["base_price"]
+        additional_cost = additional_apps * tier["price_per_app"]
     
-    additional_apps = num_apps - tier["min_apps"]
-    return tier["base_price"] + (additional_apps * tier["price_per_app"])
+    subtotal = base_cost + additional_cost
+    
+    if risk_quantification:
+        # Apply 30% increase for risk quantification
+        risk_premium = subtotal * 0.30
+        total_price = subtotal + risk_premium
+    else:
+        risk_premium = 0
+        total_price = subtotal
+    
+    return {
+        'total_price': total_price,
+        'base_cost': base_cost,
+        'additional_cost': additional_cost,
+        'subtotal': subtotal,
+        'risk_premium': risk_premium,
+        'risk_enabled': risk_quantification
+    }
 
-def find_optimal_recommendation(num_apps: int) -> Optional[Dict]:
+def find_optimal_recommendation(num_apps: int, risk_quantification: bool = False) -> Optional[Dict]:
     """Find if there's a better tier recommendation."""
     current_tier = find_appropriate_tier(num_apps)
-    current_price = calculate_price(num_apps, current_tier)
+    current_result = calculate_price(num_apps, current_tier, risk_quantification)
+    current_price = current_result['total_price']
     
     # Check if next tier would be more cost-effective
     current_index = PRICING_TIERS.index(current_tier)
     
     if current_index < len(PRICING_TIERS) - 1:
         next_tier = PRICING_TIERS[current_index + 1]
-        next_tier_min_price = next_tier["base_price"]
+        next_tier_result = calculate_price(next_tier["min_apps"], next_tier, risk_quantification)
+        next_tier_min_price = next_tier_result['total_price']
         
         # Check if the inflection point suggests upgrading
         if (current_tier["inflection_point"] and 
@@ -232,13 +255,17 @@ def find_optimal_recommendation(num_apps: int) -> Optional[Dict]:
                 "current_price": current_price,
                 "recommended_price": next_tier_min_price,
                 "savings": current_price - next_tier_min_price,
-                "reason": f"You're past the inflection point ({current_tier['inflection_point']:.0f} apps). Upgrading to {next_tier['name']} would be more cost-effective."
+                "reason": f"You're past the inflection point ({current_tier['inflection_point']:.0f} AI systems). Upgrading to {next_tier['name']} would be more cost-effective."
             }
     
     return None
 
-def create_pricing_chart(num_apps: int):
+def create_pricing_chart(num_apps: int, risk_quantification: bool = False):
     """Create an interactive pricing chart matching your style."""
+    
+    if not PLOTLY_AVAILABLE:
+        st.info("📊 Interactive charts require Plotly installation. The calculator works perfectly without charts!")
+        return None
     
     # Generate data points for visualization
     app_ranges = []
@@ -256,7 +283,7 @@ def create_pricing_chart(num_apps: int):
             max_range = min(tier["max_apps"], 1500)
             
         tier_apps = list(range(tier["min_apps"], max_range + 1, 10))
-        tier_prices = [calculate_price(apps, tier) for apps in tier_apps]
+        tier_prices = [calculate_price(apps, tier, risk_quantification)['total_price'] for apps in tier_apps]
         
         app_ranges.extend(tier_apps)
         prices.extend(tier_prices)
@@ -280,23 +307,28 @@ def create_pricing_chart(num_apps: int):
             max_range = min(tier["max_apps"], 1500)
         
         tier_apps = list(range(tier["min_apps"], max_range + 1, 10))
-        tier_prices = [calculate_price(apps, tier) for apps in tier_apps]
+        tier_prices = [calculate_price(apps, tier, risk_quantification)['total_price'] for apps in tier_apps]
+        
+        line_name = f"{tier['name']}" + (" + Risk Q" if risk_quantification else "")
         
         fig.add_trace(go.Scatter(
             x=tier_apps,
             y=tier_prices,
             mode='lines+markers',
-            name=tier["name"],
+            name=line_name,
             line=dict(color=color_palette[i % len(color_palette)], width=3),
             marker=dict(size=6),
             hovertemplate=f'<b>{tier["name"]}</b><br>' +
-                         'Apps: %{x}<br>' +
-                         'Price: €%{y:,.0f}<extra></extra>'
+                         'AI Systems: %{x}<br>' +
+                         'Price: €%{y:,.0f}' +
+                         ('<br><i>Risk Quantification: +30%</i>' if risk_quantification else '') +
+                         '<extra></extra>'
         ))
     
     # Add current selection point
     current_tier = find_appropriate_tier(num_apps)
-    current_price = calculate_price(num_apps, current_tier)
+    current_result = calculate_price(num_apps, current_tier, risk_quantification)
+    current_price = current_result['total_price']
     
     fig.add_scatter(
         x=[num_apps], 
@@ -305,15 +337,18 @@ def create_pricing_chart(num_apps: int):
         marker=dict(size=20, color='#e74c3c', symbol='diamond'),
         name='Your Selection',
         hovertemplate=f'<b>Your Configuration</b><br>' +
-                     f'Apps: {num_apps}<br>' +
+                     f'AI Systems: {num_apps}<br>' +
                      f'Price: €{current_price:,.0f}<br>' +
-                     f'Tier: {current_tier["name"]}<extra></extra>'
+                     f'Tier: {current_tier["name"]}' +
+                     ('<br><i>Risk Quantification: Enabled</i>' if risk_quantification else '') +
+                     '<extra></extra>'
     )
     
     # Add inflection points
     for tier in PRICING_TIERS:
         if tier["inflection_point"] and tier["inflection_point"] <= 1500:
-            inflection_price = calculate_price(int(tier["inflection_point"]), tier)
+            inflection_result = calculate_price(int(tier["inflection_point"]), tier, risk_quantification)
+            inflection_price = inflection_result['total_price']
             fig.add_vline(
                 x=tier["inflection_point"], 
                 line_dash="dash", 
@@ -322,9 +357,14 @@ def create_pricing_chart(num_apps: int):
                 annotation_text=f"{tier['name']} Optimization Point"
             )
     
+    chart_title = '<b>Modulos AI GRC Pricing Structure</b><br><sub>Interactive Pricing Across All Tiers'
+    if risk_quantification:
+        chart_title += ' (with Risk Quantification +30%)'
+    chart_title += '</sub>'
+    
     fig.update_layout(
         title={
-            'text': '<b>Modulos AI GRC Pricing Structure</b><br><sub>Interactive Pricing Across All Tiers</sub>',
+            'text': chart_title,
             'x': 0.5,
             'xanchor': 'center',
             'font': {'family': 'Inter', 'size': 20}
@@ -462,7 +502,7 @@ def main():
     if recommendation:
         st.markdown(f"""
         <div class="optimization-alert">
-            <h4 style="color: #c0392b; margin-bottom: 1rem;">Optimization Opportunity Detected</h4>
+            <h4 style="color: #c0392b; margin-bottom: 1rem;">⚠️ Optimization Opportunity Detected</h4>
             <p><strong>{recommendation["reason"]}</strong></p>
             <div style="margin-top: 1rem;">
                 <p>• Current Configuration: €{recommendation['current_price']:,.0f}</p>
@@ -474,7 +514,7 @@ def main():
     else:
         st.markdown(f"""
         <div class="optimal-badge">
-            <h4 style="color: #229954; margin-bottom: 1rem;">Optimal Configuration</h4>
+            <h4 style="color: #229954; margin-bottom: 1rem;">✅ Optimal Configuration</h4>
             <p>You're getting the best value with the <strong>{current_tier['name']}</strong> tier for {num_apps} AI systems!</p>
             <p>This configuration provides optimal cost efficiency for your portfolio size.</p>
         </div>
@@ -534,7 +574,7 @@ def main():
     if risk_quantification:
         st.markdown("""
         <div class="premium-card">
-            <h4 style="color: #667eea; margin-bottom: 1rem;">Risk Quantification Features Included</h4>
+            <h4 style="color: #667eea; margin-bottom: 1rem;">📊 Risk Quantification Features Included</h4>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
                 <div>
                     <h5 style="color: #2c3e50; margin-bottom: 0.5rem;">Enhanced Risk Assessment</h5>
@@ -592,9 +632,27 @@ def main():
     if PLOTLY_AVAILABLE:
         st.markdown('<h3 class="section-header">Interactive Pricing Visualization</h3>', unsafe_allow_html=True)
         fig = create_pricing_chart(num_apps, risk_quantification)
-        st.plotly_chart(fig, use_container_width=True)
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Enhanced visualizations require Plotly. Install plotly for interactive charts.")
+        st.markdown('<h3 class="section-header">Pricing Summary</h3>', unsafe_allow_html=True)
+        st.info("📊 Interactive charts are available when Plotly is installed. The calculator provides full functionality without charts!")
+        
+        # Create a simple text-based chart alternative
+        st.markdown(f"""
+        <div class="premium-card">
+            <h4 style="color: #667eea; margin-bottom: 1rem;">Price Comparison Across Tiers</h4>
+            <div style="font-family: monospace; background: #f8f9fa; padding: 1rem; border-radius: 8px;">
+        """, unsafe_allow_html=True)
+        
+        for tier in PRICING_TIERS:
+            tier_result = calculate_price(num_apps, tier, risk_quantification)
+            tier_price = tier_result['total_price']
+            is_current = tier == current_tier
+            marker = "👉 " if is_current else "   "
+            st.write(f"{marker}{tier['name']:<12}: €{tier_price:>10,.0f}" + (" (SELECTED)" if is_current else ""))
+        
+        st.markdown("</div></div>", unsafe_allow_html=True)
     
     # Footer - matching your exact styling
     st.markdown("---")
